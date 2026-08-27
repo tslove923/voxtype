@@ -54,6 +54,31 @@ impl OpenVinoTranscriber {
                 config.model
             )));
         }
+        // `preprocessor_config.json` (mel-spectrogram feature-extraction
+        // params) isn't needed to construct the pipeline -- that only
+        // loads the .xml/.bin graphs -- but OpenVINO GenAI's WhisperPipeline
+        // reads it internally on the *first real transcription call*, so
+        // its absence doesn't surface until then, as an opaque "unknown
+        // exception" with no indication of why. Caught directly here
+        // instead, before that confusing failure mode, since it's a common
+        // gap for models fetched by an older `voxtype setup model download`
+        // (see that command's file list) rather than a fresh HF snapshot.
+        let preprocessor_config = model_dir.join("preprocessor_config.json");
+        if !preprocessor_config.exists() {
+            return Err(TranscribeError::ModelNotFound(format!(
+                "OpenVINO Whisper model at {} is missing preprocessor_config.json \
+                 (the mel-spectrogram feature-extraction config) -- present in the model's \
+                 own HuggingFace repo, but not fetched by older versions of 'voxtype setup \
+                 model download'. Without it, transcription fails on the *first* real call \
+                 with an opaque \"unknown exception\", not at startup.\n  \
+                 Fix: re-run 'voxtype setup model download {}', or fetch it directly:\n  \
+                 curl -Lo {} https://huggingface.co/OpenVINO/whisper-{}/resolve/main/preprocessor_config.json",
+                model_dir.display(),
+                config.model,
+                preprocessor_config.display(),
+                config.model,
+            )));
+        }
         if config.threads.is_some() {
             tracing::warn!(
                 "OpenVINO GenAI WhisperPipeline does not support thread count configuration; \
@@ -131,11 +156,82 @@ impl OpenVinoTranscriber {
             TranscribeError::InitFailed("Model path contains invalid UTF-8".to_string())
         })?;
 
-        let pipeline = WhisperPipeline::new(model_path_str, &config.device).map_err(|e| {
-            TranscribeError::InitFailed(format!(
-                "Failed to create OpenVINO GenAI Whisper pipeline for {}: {}\n\n{}",
+        // NPU compiling a large model for the first time is *slow*, not
+        // broken -- confirmed live: large-v3-int4's first NPU compile on
+        // one machine took ~887s (the VPU compiler's tiling-strategy
+        // search hits many ERROR_INPUT_TOO_BIG rejections along the way,
+        // which look alarming in OV_NPU_LOG_LEVEL=LOG_DEBUG output but
+        // aren't fatal -- it keeps searching and gets there). That cost
+        // is one-time only if this build's openvino-genai supports a
+        // compiled-blob cache (CACHE_DIR); this crate version doesn't
+        // expose that (WhisperPipeline::new has no properties param), so
+        // here it's paid on every process start for a large model, not
+        // just the first ever. Silence for minutes with no other
+        // feedback reads exactly like a hang, so say so up front rather
+        // than let someone reasonably conclude it's stuck and kill it
+        // before the compile ever finishes.
+        if !config.device.eq_ignore_ascii_case("CPU") {
+            tracing::info!(
+                "Compiling for {} for the first time can take several minutes for a large \
+                 model (confirmed: large-v3-int4 ~15min on one machine) -- this is normal, \
+                 not a hang",
                 config.device,
-                e,
+            );
+        }
+
+        // Fallback chain: configured device, then GPU, then CPU -- for
+        // when the configured device genuinely errors (missing driver,
+        // no NPU on this chip, unsupported op, ...) rather than just
+        // being slow to compile, which the warning above already covers.
+        // CPU last since it's the slowest but always available; GPU
+        // ahead of it since a large model that errors on NPU is more
+        // likely to still run acceptably on GPU than fall back all the
+        // way to CPU. Skips a device already tried (e.g. configured
+        // device is already GPU or CPU) rather than retrying it.
+        let mut candidates = vec![config.device.as_str()];
+        for device in ["GPU", "CPU"] {
+            if !candidates.iter().any(|d| d.eq_ignore_ascii_case(device)) {
+                candidates.push(device);
+            }
+        }
+
+        let mut pipeline = None;
+        let mut first_error: Option<(String, openvino_genai::SetupError)> = None;
+        for (i, device) in candidates.iter().enumerate() {
+            match WhisperPipeline::new(model_path_str, device) {
+                Ok(p) => {
+                    if i > 0 {
+                        tracing::warn!(
+                            "OpenVINO device '{}' failed to initialize ({}); fell back to '{}'. \
+                             If '{}' was NPU, note a long compile isn't what triggers this --\
+                             see this function's own comment on that -- so a genuine error here \
+                             usually means something more fundamental (missing driver, \
+                             unsupported op, no NPU on this chip).",
+                            candidates[0],
+                            first_error.as_ref().map(|(_, e)| e.to_string()).unwrap_or_default(),
+                            device,
+                            candidates[0],
+                        );
+                    }
+                    pipeline = Some(p);
+                    break;
+                }
+                Err(e) => {
+                    if first_error.is_none() {
+                        first_error = Some((device.to_string(), e));
+                    }
+                }
+            }
+        }
+
+        let pipeline = pipeline.ok_or_else(|| {
+            let (first_device, first_e) = first_error.expect("candidates is never empty");
+            TranscribeError::InitFailed(format!(
+                "Failed to create OpenVINO GenAI Whisper pipeline on any of {:?} -- first \
+                 failure was on '{}': {}\n\n{}",
+                candidates,
+                first_device,
+                first_e,
                 config.installation_guidance(),
             ))
         })?;

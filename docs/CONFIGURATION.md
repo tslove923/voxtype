@@ -1640,7 +1640,7 @@ Configuration for the OpenVINO Whisper speech-to-text engine. This section is on
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `model` | String | `"base.en"` | Model name or path to an OpenVINO IR model directory |
-| `device` | String | `"NPU"` | OpenVINO device: `"NPU"`, `"CPU"`, `"GPU"`, or `"AUTO"` |
+| `device` | String | `"NPU"` | OpenVINO device: `"NPU"`, `"CPU"`, `"GPU"`, or `"AUTO"`. On a genuine device error (missing driver, unsupported op, no NPU on this chip) voxtype falls back automatically: configured device → GPU → CPU, skipping a device already tried. This is for actual errors only -- see the note below on large models, which don't error on NPU, just compile slowly the first time. |
 | `quantized` | Boolean | `true` | Prefer int8 quantized model variants |
 | `threads` | Integer | system-detected | CPU inference threads |
 | `language` | String | `"en"` | Whisper language code |
@@ -1648,6 +1648,8 @@ Configuration for the OpenVINO Whisper speech-to-text engine. This section is on
 | `on_demand_loading` | Boolean | `false` | Load the model when recording begins |
 
 The model directory must contain the OpenVINO encoder and decoder XML/BIN files plus `tokenizer.json`. Available bundled short names include `"base.en-int8"`, `"base.en-fp16"`, `"small.en-int8"`, `"base-int8"`, and `"large-v3-int8"`.
+
+**Large models on NPU compile *much* slower the first time -- this is normal, not a hang.** Confirmed live: `large-v3-int4`'s first NPU compile took ~887s (about 15 minutes) on Lunar Lake, with no output in between at default log levels (the VPU compiler's tiling-strategy search logs plenty at `OV_NPU_LOG_LEVEL=LOG_DEBUG`, including alarming-looking `ERROR_INPUT_TOO_BIG` lines, but they aren't fatal -- it keeps searching and gets there). If you don't want to wait through it, use `device = "GPU"` instead (compiles in ~11s for a model this size) or a smaller model. voxtype logs an info-level message before attempting a non-CPU device warning that this can happen.
 
 ### openvino.openvino_dir
 
