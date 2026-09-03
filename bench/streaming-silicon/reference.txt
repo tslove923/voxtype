@@ -1,0 +1,1 @@
+Testing the voxtype streaming engine across three machines: Tiger Lake, Raptor Lake, and Lunar Lake. This reference clip stays fixed so latency, accuracy, and power numbers are actually comparable between engines and devices, instead of comparing three different sentences spoken three different ways.
