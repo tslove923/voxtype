@@ -29,8 +29,8 @@ trap 'pactl set-default-source "$ORIG_DEFAULT_SOURCE" 2>/dev/null' EXIT
 
 "$BIN" -vv daemon > "$LOG" 2>&1 &
 DAEMON_PID=$!
-for i in $(seq 1 30); do grep -qE "Listening for hotkey|Model loaded, ready|pipeline created in" "$LOG" 2>/dev/null && break; sleep 1; done
-COLD_START=$(grep -oE "(Model loaded|pipeline created) in [0-9.]+s" "$LOG" | grep -oE "[0-9.]+" | tail -1)
+for i in $(seq 1 30); do grep -aqE "Listening for hotkey|Model loaded, ready|pipeline created in" "$LOG" 2>/dev/null && break; sleep 1; done
+COLD_START=$(grep -aoE "(Model loaded|pipeline created) in [0-9.]+s" "$LOG" | grep -oE "[0-9.]+" | tail -1)
 
 # --- start samplers ---
 SYSFS_LOG="$WORKDIR/sysfs-${ENGINE}-${DEVICE}-${RUN_N}.log"
@@ -70,12 +70,12 @@ kill "$SYSFS_SAMPLER_PID" 2>/dev/null
 sleep 1
 
 # --- extract metrics from daemon log ---
-FIRST_TICK_TS=$(grep -m1 "\[sliding\] tick transcribe" "$LOG" | grep -oE '^[0-9T:.\-]+Z' | head -1)
-AVG_INFER_MS=$(grep -oE '[0-9.]+s infer' "$LOG" | grep -oE '^[0-9.]+' | awk '{s+=$1;c++} END{if(c>0) printf "%.1f", (s/c)*1000; else print "NA"}')
-AVG_RTF=$(grep -oE '\([0-9]+ samples, [0-9.]+s infer' "$LOG" | sed -E 's/\(([0-9]+) samples, ([0-9.]+)s infer/\1 \2/' | awk '{if($1>0) print $2/($1/16000)}' | awk '{s+=$1;c++} END{if(c>0) printf "%.3f", s/c; else print "NA"}')
-REVISE_EVENTS=$(grep -c '\[sliding\] REVISE' "$LOG")
-BACKSPACE_TOTAL=$(grep -oE 'backspace [0-9]+ chars' "$LOG" | grep -oE '[0-9]+' | awk '{s+=$1} END{print s+0}')
-FINAL_TEXT=$(grep '\[sliding\] tick transcribe' "$LOG" | tail -1 | sed -E 's/.*tick transcribe -> "(.*)" \([0-9]+ samples.*/\1/')
+FIRST_TICK_TS=$(grep -am1 "\[sliding\] tick transcribe" "$LOG" | grep -oE '^[0-9T:.\-]+Z' | head -1)
+AVG_INFER_MS=$(grep -aoE '[0-9.]+s infer' "$LOG" | grep -oE '^[0-9.]+' | awk '{s+=$1;c++} END{if(c>0) printf "%.1f", (s/c)*1000; else print "NA"}')
+AVG_RTF=$(grep -aoE '\([0-9]+ samples, [0-9.]+s infer' "$LOG" | sed -E 's/\(([0-9]+) samples, ([0-9.]+)s infer/\1 \2/' | awk '{if($1>0) print $2/($1/16000)}' | awk '{s+=$1;c++} END{if(c>0) printf "%.3f", s/c; else print "NA"}')
+REVISE_EVENTS=$(grep -ac '\[sliding\] REVISE' "$LOG")
+BACKSPACE_TOTAL=$(grep -aoE 'backspace [0-9]+ chars' "$LOG" | grep -oE '[0-9]+' | awk '{s+=$1} END{print s+0}')
+FINAL_TEXT=$(grep -a '\[sliding\] tick transcribe' "$LOG" | tail -1 | sed -E 's/.*tick transcribe -> "(.*)" \([0-9]+ samples.*/\1/')
 echo "$FINAL_TEXT" > "$WORKDIR/hyp-${ENGINE}-${DEVICE}-${RUN_N}.txt"
 WER=$(python3 "$WORKDIR/wer.py" "$WORKDIR/reference.txt" "$WORKDIR/hyp-${ENGINE}-${DEVICE}-${RUN_N}.txt" 2>/dev/null || echo NA)
 
