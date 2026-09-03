@@ -116,6 +116,20 @@ Leave `[audio] device = "default"` in `config.toml` — do not point it at
 `voxbench.monitor` directly, it will fail to start with `Audio device not
 found: 'voxbench.monitor'`.
 
+**Check `external_trigger_silence_timeout_secs`** if a machine's `config.toml`
+was previously tuned for wake-word/voice-assistant use (short auto-stop on
+silence) — a low value here can cut the recording short *before*
+`reference.wav`'s speech ever crosses the silence-detection threshold, well
+before `run-one.sh`'s own explicit `record stop`. Symptom: truncated or empty
+`final_text` despite audio routing being correct. Raise it to something like
+`40.0` for the benchmark session if this happens.
+
+**Check `[whisper] streaming`** is `true` — unlike `[openvino] streaming`,
+which a fresh OpenVINO setup usually has already, `[whisper] streaming`
+defaults to `false`. Without it the `whisper/CPU` combo runs single-shot and
+never emits the `[sliding] tick transcribe` lines this toolkit parses for
+every metric — everything comes back NA/empty, silently.
+
 ## 5. Monitoring stack
 
 **CPU counters**: [Intel PCM](https://github.com/intel/pcm), built from
